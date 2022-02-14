@@ -13,6 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <limits>
+
 #include "tensorflow/lite/c/builtin_op_data.h"
 #include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/kernels/internal/common.h"
@@ -123,14 +125,21 @@ TfLiteStatus SoftmaxPrepare(TfLiteContext* context, TfLiteNode* node) {
   // Populate LUT if required
   if (input->type == kTfLiteInt16) {
     TF_LITE_ENSURE_EQ(context, output->params.zero_point, 0);
-    // exp LUT only used on negative values
-    // we consider exp(-10.0) is insignificant to accumulation
-    gen_lut<float, int16_t, int16_t>(
-        [](float value) { return std::exp(value); }, -10.0f, 0.0f, -1.0f, 1.0f,
-        op_data->exp_lut);
-    gen_lut<float, int16_t, int16_t>(
-        [](float value) { return 1.0f / (1.0f + value); }, 0.0f, 1.0f, -1.0f,
-        1.0f, op_data->one_over_one_plus_x_lut);
+    const int32_t range = std::numeric_limits<int16_t>::max() -
+                          std::numeric_limits<int16_t>::min();
+    // Exp LUT is only used with negative values. Generate the LUT in the input
+    // range [-10.0; 0] as we consider resulting values smaller than exp(-10)
+    // insignificant. Use a symmetric output range of [-1.0; 1.0] for backward
+    // compatibility.
+    LUTPopulate<int16_t>(
+        10.0f / range, std::numeric_limits<int16_t>::max(), 2.0f / range, 0,
+        [](float value) { return std::exp(value); }, op_data->exp_lut);
+    // Input is in the [0; 1] range and use a symmetric output range of
+    // [-1.0; 1.0] for backward compatibility.
+    LUTPopulate<int16_t>(1.0f / range, std::numeric_limits<int16_t>::min(),
+                         2.0f / range, 0,
+                         [](float value) { return 1.0f / (1.0f + value); },
+                         op_data->one_over_one_plus_x_lut);
     op_data->zero_point = output->params.zero_point;
     op_data->scale = output->params.scale;
   }
